@@ -1,1 +1,32 @@
+节点a用cluster.call访问节点b的过程.
 
+1 向集群另外的节点发消息的前提时已经loadconfig();
+
+2 先观察a这边:
+在节点a这一侧会新建一个clustersender服务,所有a发向b的消息后续都会经过这个服务;
+clustersender服务启动的处理很简单,就是根据b的配置(ip,port),建立一个跟b通信的socketchannel(sc)对象;
+当节点a尝试向节点b发消息时,会用cluster.call或者cluster.send;首次发消息时,节点a才会建立跟b的tcp连接;
+
+3 再观察b这边:
+由于b提供了集群端口,a跟b的集群端口进行连接时,b就会知道这个是集群的通信通道;
+在b这边会创建clusteragent来处理这个通道收到的消息;
+看到clusteragent启动的时候调用skynet.call(gate, "lua", "forward", fd),
+再看forward做的事请;看代码,forward这个消息会调用到gateserver.openclient(fd);
+进入到resume_socket,然后enable_read,表示把这个socket设置为可读,epoll读到这个fd有消息时,就会产生socket消息;
+由于这个fd是由gate这个服务start(gateserver.openclient),因此接收socket的服务也是这个gate,可以看到gateserver里面就注册了skynet.PTYPE_SOCKET 类型的消息;
+gateserver收到socket消息后,用netpack对socket消息进行过滤,然后查看是哪个类型的的消息,一般来说发起cluster.call,cluster.send的消息时,对端会收到
+data类型的消息,因此就会进入到dispatch_msg(gateserver)的处理中,最后在gate看到,消息就会以client类型的消息redirect到clusteragent里面,
+进入到dispatch_request的处理;dispatch_request会根据目标地址addr将这个消息发到addr的服务上处理;
+a发过来的消息经过上面的流转后,就已经被打包成一个skynet消息,发送到目标服务addr去处理,等待addr处理的返回结果;
+
+
+再解答一下问题
+cluster.call访问一个集群其他节点时，有没有超时机制？skynet有没有保证这个call一定能收到结果？
+没有超时机制;
+可以看到节点之间的可靠通信是依赖于tcp通信;
+而节点收到这个消息,并转发给目标服务去处理时,这个过程依赖的skynet处理消息的机制;
+当一个服务给另外的服务发送消息时,能保证得到可见范围内的结果:
+    目标服务处理消息完成,会返回结果;
+    找不到服务时,也会收到错误信息;
+    目标服务处理消息中途出现报错,也会返回消息;
+总结来说就是依赖tcp通信+skynet内部服务处理消息的机制去保证整个集群通信的可靠;
