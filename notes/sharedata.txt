@@ -1,0 +1,31 @@
+sharedata和sharetable，这两个模块的目的都是为了能让多个lua虚拟机共享
+一块数据，通常是一份不经常改变的数据，例如游戏配置表；记一些两者的区别；
+
+
+sharedata:
+    简单描述原理，skynet节点新建一个sharedatad服务，来管理这个节点用sharedata（简称sd）
+    共享的数据；
+    当需要共享一份table，向sd传入要共享的table：sharedata.new(name, value)，
+    调用lnewconf，lnewconf做的事情，就是在当前虚拟机创建另一个luastate状态，分配一个
+    table，在pconv -> convtable调用链中，将需要共享的表的数据拷贝到table里面，拷贝
+    出来的表有相同的层次结构；相当于复制了一份表；当用sharedata.new新建了一个共享对象
+    后，后续想用这份数据的服务，需要sharedata.query(name)就能获取到这个表数据；从而
+    达到多个lua虚拟机共享数据的效果；
+    sharedata做了更多的事请，当一个服务sharedata.query(name)一份配置时，服务会fork出
+    一个协程去专门订阅关注name配置，配置被update时，该服务能快速的收到消息，就能更新最近配置；
+
+
+sharetable:
+    当需要共享一份table，向sharetable(简称st)传入要共享的table：sharedata.loadfile(name, value)，
+    调用matrix_from_file，matrix_from_file做的事请，也是先创建一个新的虚拟机状态，新的
+    虚拟机用来做这份共享数据的容器；调用链：matrix_from_file -> load_matrixfile -> make_matrix,
+    make_matrix根据文件路径，读取文件的lua文本，并加载成一个函数并执行，函数一般返回
+    一份数据（return {...})，此时数据内容在新虚拟机的栈上；make_matrix将栈顶数据做gc标记，
+    并创建指向这份数据的light userdata；最后在box_state中，创建了一个userdata ud，ud
+    引用住这个新的虚拟机，还给ud设置了元表，最后返回ud给lua层调用，lua就是通过操作这个ud来
+    获取共享数据；
+    读取这份共享数据的流程就跟上面创建共享数据的流程相反，通过ud去找到这个新的虚拟机，然后
+    获取虚拟机栈顶上的指针，这个指针指向了这份共享数据，lua虚拟机通过访问这个light userdata
+    就能访问其他虚拟机的数据，达到数据共享的效果；
+    sharetable没有像sharedata自动启动了一个moniter协程去同步共享数据的更新；当配置更新时，
+    需要重新loadfile这份数据，此时需要自己实现服务重新query最新数据的功能；

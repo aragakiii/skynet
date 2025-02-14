@@ -1,0 +1,47 @@
+skynet
+
+1、线程模型
+2、消息模型
+3、集群模型
+4、skynet的内存改进方案：codecache（多个虚拟机用相同的proto代码）、sharetable（一个节点缓存配置，其他节点访问这些配置）
+5、网关模型（socket、websocket，tcp/kcp/udp）
+6、项目的进程模型
+
+
+1、线程模型
+    在skynet_start函数里可以看到启动了4中线程：thread_monitor、thread_timer、thread_socket、thread_worker。
+    
+    thread_monitor的工作：每个worker线程对应一个monitor对象，onitor线程每1毫秒检查所有的worker线程，检查当前的版本
+跟1毫秒之前的版本是否不一致，不一致的话就说明这个monitor对应的worker线程当前处理的消息处理得太久，就会打印出"endless loop"的提示。
+
+    thread_timer的工作：
+    while循环去检查是否有到期需要处理的事件事件，然后逐个执行。程序用skynet.timeout接口向skynet
+注册定时事件，到期后会回调timeout的回调函数。
+
+    thread_socket的工作：
+    skynet提供了一套socket接口，能跟对端建立tcp连接，或者udp通信。thread_socket就是处理这些消息。socket_server创建了管道pipe，
+pipe用来接收listen、bind等事件，另外创建epoll来处理read、write事件。
+
+
+    thread_worker的工作：
+    每启动一个服务的时候，服务都会创建一个message_queue。worker线程会执行一个while循环，循环里一直去检查
+有哪个服务有消息要处理，然后按照worker线程的权重变量去处理一定数量的消息。什么时候会产生消息，一个服务用skynet.call这些
+接口向目标服务发送消息时，会向目标服务插入一条消息；注册定时事件，到期后系统也会向服务插入消息。
+
+
+
+3、集群模型
+    需要加入集群的节点，首先要加载一份集群配置。节点可以调用cluster.open来监听一个端口，等待其他节点的连接。
+后续跟其他节点通信时，可以直接向对应的节点调用cluster.call发送数据。
+
+
+4、skynet的内存改进方案
+    codecache：codecache解决的是什么问题？skynet里面启动多个lua虚拟机，而且多个虚拟机都将require相同的脚
+本文件，如果不用codecache，那么每个虚拟机在require脚本后，都会编译一份函数原型proto，codecache解决的就
+是只编译出一份proto，当其他虚拟机也require相同的文件时根据文件路径+文件名标识一个脚本，
+找到函数原型proto，就不用再编译新的proto。
+
+    sharetable：一个服务通过sharetable接口加载一份配置，其他服务通过query能访问到这份配置的数据。如果不用
+sharetable，那么就需要每个服务的lua虚拟机都加载自己的配置，会浪费很多内存。skynet修改了lua虚拟机，能够让其他
+让一个table在不同的虚拟机内共享读取。
+
